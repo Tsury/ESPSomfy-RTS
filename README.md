@@ -8,6 +8,7 @@
 > *   **Internal Improvements:** Upgraded to ArduinoJson v7 and refactored networking code.
 > *   **SSDP Conditional Compilation:** SSDP can be enabled/disabled via build flags.
 > *   **Custom Partitioning:** Includes a custom partition scheme optimized for the ESP32-C6's flash size while maintaining OTA capability.
+> *   **PlatformIO Conversion:** The project has been converted from an Arduino IDE project to a PlatformIO one.
 
 A controller for Somfy RTS blinds and shades that supports up to 32 individual shades and 16 groups over 433MHz RTx protocols.  If you have IO Home Control motors this project is not for you but you can use the IO Remote protocol to connect the ESPSomfy RTS device to a disected remote.  Look in the [Wiki](https://github.com/rstrouse/ESPSomfy-RTS/wiki/Controlling-Motors-with-GPIO) for options and verify whether the solution is workable for you.
 
