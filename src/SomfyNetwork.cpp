@@ -1,9 +1,8 @@
-#include <ETH.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <esp_task_wdt.h>
 #include "ConfigSettings.h"
-#include "Network.h"
+#include "SomfyNetwork.h"
 #include "Web.h"
 #include "Sockets.h"
 #include "Utils.h"
@@ -15,7 +14,7 @@ extern Web webServer;
 extern SocketEmitter sockEmit;
 extern MQTTClass mqtt;
 extern rebootDelay_t rebootDelay;
-extern Network net;
+extern SomfyNetwork net;
 extern SomfyShadeController somfy;
 
 static unsigned long _lastHeapEmit = 0;
@@ -24,13 +23,13 @@ static bool _apScanning = false;
 static uint32_t _lastMaxHeap = 0;
 static uint32_t _lastHeap = 0;
 int connectRetries = 0;
-void Network::end() {
+void SomfyNetwork::end() {
   SSDP.end();
   mqtt.end();
   sockEmit.end();
   delay(100);
 }
-bool Network::setup() {
+bool SomfyNetwork::setup() {
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   WiFi.persistent(false);
@@ -48,22 +47,18 @@ bool Network::setup() {
   sockEmit.begin();
   return true;
 }
-conn_types_t Network::preferredConnType() {
+conn_types_t SomfyNetwork::preferredConnType() {
   switch(settings.connType) {
     case conn_types_t::wifi:    
       return settings.WIFI.ssid[0] != '\0' ? conn_types_t::wifi : conn_types_t::ap;
     case conn_types_t::unset:
     case conn_types_t::ap:
       return conn_types_t::ap;
-    case conn_types_t::ethernetpref:
-      return settings.WIFI.ssid[0] != '\0' && (!ETH.linkUp() && this->ethStarted) ? conn_types_t::wifi : conn_types_t::ethernet;
-    case conn_types_t::ethernet:
-      return ETH.linkUp() || !this->ethStarted ? conn_types_t::ethernet : conn_types_t::ap;
     default:
       return settings.connType; 
   }
 }
-void Network::loop() {
+void SomfyNetwork::loop() {
   // ORDER OF OPERATIONS:
   // ----------------------------------------------
   // 1. If we are in the middle of a connection process we need to simply bail after the connect method.  The
@@ -154,7 +149,7 @@ void Network::loop() {
   }
   else if(!settings.ssdpBroadcast && SSDP.isStarted) SSDP.end();
 }
-bool Network::changeAP(const uint8_t *bssid, const int32_t channel) {
+bool SomfyNetwork::changeAP(const uint8_t *bssid, const int32_t channel) {
   esp_task_wdt_reset(); // Make sure we do not reboot here.
   if(SSDP.isStarted) SSDP.end();
   mqtt.disconnect();
@@ -167,7 +162,7 @@ bool Network::changeAP(const uint8_t *bssid, const int32_t channel) {
   this->connectStart = millis();
   return false;
 }
-void Network::emitSockets() {
+void SomfyNetwork::emitSockets() {
   this->emitHeap();
   if(this->needsBroadcast || 
     (this->connType == conn_types_t::wifi && (abs(abs(WiFi.RSSI()) - abs(this->lastRSSI)) > 1 || WiFi.channel() != this->lastChannel))) {
@@ -176,52 +171,33 @@ void Network::emitSockets() {
     this->needsBroadcast = false;
   }
 }
-void Network::emitSockets(uint8_t num) {
-  if(this->connType == conn_types_t::ethernet) {
-      JsonSockEvent *json = sockEmit.beginEmit("ethernet");
-      json->beginObject();
-      json->addElem("connected", this->connected());
-      json->addElem("speed", ETH.linkSpeed());
-      json->addElem("fullduplex", ETH.fullDuplex());
-      json->endObject();
-      sockEmit.endEmit(num);
+void SomfyNetwork::emitSockets(uint8_t num) {
+  if(WiFi.status() == WL_CONNECTED) {
+    JsonSockEvent *json = sockEmit.beginEmit("wifiStrength");
+    json->beginObject();
+    json->addElem("ssid", WiFi.SSID().c_str());
+    json->addElem("strength", (int32_t)WiFi.RSSI());
+    json->addElem("channel", (int32_t)this->channel);
+    json->endObject();
+    sockEmit.endEmit(num);
+    this->lastRSSI = WiFi.RSSI();
+    this->lastChannel = WiFi.channel();
   }
   else {
-      if(WiFi.status() == WL_CONNECTED) {
-        JsonSockEvent *json = sockEmit.beginEmit("wifiStrength");
-        json->beginObject();
-        json->addElem("ssid", WiFi.SSID().c_str());
-        json->addElem("strength", (int32_t)WiFi.RSSI());
-        json->addElem("channel", (int32_t)this->channel);
-        json->endObject();
-        sockEmit.endEmit(num);
-        this->lastRSSI = WiFi.RSSI();
-        this->lastChannel = WiFi.channel();
-      }
-      else {
-        JsonSockEvent *json = sockEmit.beginEmit("wifiStrength");
-        json->beginObject();
-        json->addElem("ssid", "");
-        json->addElem("strength", (int8_t)-100);
-        json->addElem("channel", (int8_t)-1);
-        json->endObject();
-        sockEmit.endEmit(num);
-        
-        json = sockEmit.beginEmit("ethernet");
-        json->beginObject();
-        json->addElem("connected", false);
-        json->addElem("speed", (uint8_t)0);
-        json->addElem("fullduplex", false);
-        json->endObject();
-        sockEmit.endEmit(num);
-        this->lastRSSI = -100;
-        this->lastChannel = -1;
-      }
+    JsonSockEvent *json = sockEmit.beginEmit("wifiStrength");
+    json->beginObject();
+    json->addElem("ssid", "");
+    json->addElem("strength", (int8_t)-100);
+    json->addElem("channel", (int8_t)-1);
+    json->endObject();
+    sockEmit.endEmit(num);
+
+    this->lastRSSI = -100;
+    this->lastChannel = -1;
   }
   this->emitHeap(num);
 }
-void Network::setConnected(conn_types_t connType) {
-  esp_task_wdt_reset();
+void SomfyNetwork::setConnected(conn_types_t connType) {
   this->connType = connType;
   this->connectTime = millis();
   connectRetries = 0;
@@ -238,19 +214,8 @@ void Network::setConnected(conn_types_t connType) {
     this->channel = WiFi.channel();
     this->connectAttempts++;
   }
-  else if(this->connType == conn_types_t::ethernet) {
-    if(this->softAPOpened) {
-      Serial.println("Disonnecting from SoftAP");
-      WiFi.softAPdisconnect(true);
-      WiFi.mode(WIFI_OFF);
-    }
-    this->connectAttempts++;
-    this->_connecting = false;
-    this->wifiFallback = false;
-  }
   // NET: Begin this in the startup.
   //sockEmit.begin();
-  esp_task_wdt_reset();
   
   if(this->connectAttempts == 1) {
     Serial.println();
@@ -268,32 +233,6 @@ void Network::setConnected(conn_types_t connType) {
         settings.IP.dns2 = WiFi.dnsIP(1);
       }
     }
-    else {
-      Serial.print("Successfully Connected to Ethernet!!! ");
-      Serial.print(ETH.localIP());
-      if(ETH.fullDuplex()) {
-        Serial.print(" FULL DUPLEX");
-      }
-      Serial.print(" ");
-      Serial.print(ETH.linkSpeed());
-      Serial.println("Mbps");
-      if(settings.IP.dhcp) {
-        settings.IP.ip = ETH.localIP();
-        settings.IP.subnet = ETH.subnetMask();
-        settings.IP.gateway = ETH.gatewayIP();
-        settings.IP.dns1 = ETH.dnsIP(0);
-        settings.IP.dns2 = ETH.dnsIP(1);
-      }
-      esp_task_wdt_reset();
-      JsonSockEvent *json = sockEmit.beginEmit("ethernet");
-      json->beginObject();
-      json->addElem("connected", this->connected());
-      json->addElem("speed", ETH.linkSpeed());
-      json->addElem("fullduplex", ETH.fullDuplex());
-      json->endObject();
-      sockEmit.endEmit();
-      esp_task_wdt_reset();
-    }
   }
   else {
     Serial.println();
@@ -309,15 +248,6 @@ void Network::setConnected(conn_types_t connType) {
       Serial.print(" (");
       Serial.print(this->strength);
       Serial.print(" dBm)");
-    }
-    else {
-      Serial.print(ETH.localIP());
-      if(ETH.fullDuplex()) {
-        Serial.print(" FULL DUPLEX");
-      }
-      Serial.print(" ");
-      Serial.print(ETH.linkSpeed());
-      Serial.print("Mbps");
     }
     Serial.print(" Disconnected ");
     Serial.print(this->connectAttempts - 1);
@@ -343,7 +273,6 @@ void Network::setConnected(conn_types_t connType) {
   SSDP.setManufacturerURL(0, "https://github.com/rstrouse");
   SSDP.setURL(0, "/");
   SSDP.setActive(0, true);
-  esp_task_wdt_reset();
   if(MDNS.begin(settings.hostname)) {
     Serial.printf("MDNS Responder Started: serverId=%s\n", settings.serverId);
     MDNS.addService("http", "tcp", 80);
@@ -356,91 +285,24 @@ void Network::setConnected(conn_types_t connType) {
     MDNS.addServiceTxt("espsomfy_rts", "tcp", "version", String(settings.fwVersion.name));
   }
   if(settings.ssdpBroadcast) {
-    esp_task_wdt_reset();
     SSDP.begin();
   }
   else if(SSDP.isStarted) SSDP.end();
-  esp_task_wdt_reset();
   this->emitSockets();
   settings.printAvailHeap();
   this->needsBroadcast = true;
 }
-bool Network::connectWired() {
-  if(ETH.linkUp()) {
-    // If the ethernet link is re-established then we need to shut down wifi.
-    if(WiFi.status() == WL_CONNECTED) {
-      //sockEmit.end();
-      WiFi.disconnect(true);
-      WiFi.mode(WIFI_OFF);
-    }
-    if(this->connType != conn_types_t::ethernet) this->setConnected(conn_types_t::ethernet);
-    return true;
-  }
-  else if(this->ethStarted) {
-    // There is no wired connection so we need to fallback if appropriate.
-    if(settings.connType == conn_types_t::ethernetpref && settings.WIFI.ssid[0] != '\0')
-      return this->connectWiFi();
-  }
-  if(this->connectAttempts > 0) {
-    Serial.printf("Ethernet Connection Lost... %d Reconnecting ", this->connectAttempts);
-    Serial.println(this->mac);
-  }
-  else
-    Serial.println("Connecting to Wired Ethernet");
-  this->_connecting = true;
-  this->connTarget = conn_types_t::ethernet;
-  this->connType = conn_types_t::unset;
-  if(!this->ethStarted) {
-    // Currently the ethernet module will leak memory if you call begin more than once.
-    this->ethStarted = true;
-    WiFi.mode(WIFI_OFF);
-    if(settings.hostname[0] != '\0') 
-      ETH.setHostname(settings.hostname);
-    else
-      ETH.setHostname("ESPSomfy-RTS");
-    Serial.print("Set hostname to:");
-    Serial.println(ETH.getHostname());
-    if(!ETH.begin(settings.Ethernet.phyAddress, settings.Ethernet.PWRPin, settings.Ethernet.MDCPin, settings.Ethernet.MDIOPin, settings.Ethernet.phyType, settings.Ethernet.CLKMode)) { 
-      Serial.println("Ethernet Begin failed");
-      this->ethStarted = false;
-      if(settings.connType == conn_types_t::ethernetpref) {
-        this->wifiFallback = true;
-        return connectWiFi();
-      }
-      return false;
-    }
-    else {
-      if(!settings.IP.dhcp) {
-        if(!ETH.config(settings.IP.ip, settings.IP.gateway, settings.IP.subnet, settings.IP.dns1, settings.IP.dns2)) {
-          Serial.println("Unable to configure static IP address....");
-          ETH.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
-        }
-      }
-      else
-        ETH.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
-    }
-  }
-  this->connectStart = millis();
-  return true;
-}
-void Network::updateHostname() {
+void SomfyNetwork::updateHostname() {
   if(settings.hostname[0] != '\0' && this->connected()) {
-    if(this->connType == conn_types_t::ethernet &&
-      strcmp(settings.hostname, ETH.getHostname()) != 0) {
-      Serial.printf("Updating host name to %s...\n", settings.hostname);
-      ETH.setHostname(settings.hostname);
-      MDNS.setInstanceName(settings.hostname);        
-      SSDP.setName(0, settings.hostname);
-     }
-     else if(strcmp(settings.hostname, WiFi.getHostname()) != 0) {
+    if(strcmp(settings.hostname, WiFi.getHostname()) != 0) {
       Serial.printf("Updating host name to %s...\n", settings.hostname);
       WiFi.setHostname(settings.hostname);
       MDNS.setInstanceName(settings.hostname);        
       SSDP.setName(0, settings.hostname);
-     }
+    }
   }
 }
-bool Network::connectWiFi(const uint8_t *bssid, const int32_t channel) {
+bool SomfyNetwork::connectWiFi(const uint8_t *bssid, const int32_t channel) {
   if(this->softAPOpened && WiFi.softAPgetStationNum() > 0) {
     // There is a client connected to the soft AP.  We do not want to close out the connection.  While both the
     // Soft AP and a wifi connection can coexist on ESP32 the performance is abysmal.
@@ -513,15 +375,11 @@ bool Network::connectWiFi(const uint8_t *bssid, const int32_t channel) {
   this->connectStart = millis();
   return true;
 }
-bool Network::connect(conn_types_t ctype) {
+bool SomfyNetwork::connect(conn_types_t ctype) {
   esp_task_wdt_reset();
   if(this->connecting()) return true;
   if(this->disconnectTime == 0) this->disconnectTime = millis();
-  if(ctype == conn_types_t::ethernet && this->connType != conn_types_t::ethernet) {
-    // Here we need to call the connect to ethernet.
-    this->connectWired();
-  }
-  else if(ctype == conn_types_t::ap || (!this->connected() && millis() > this->disconnectTime + CONNECT_TIMEOUT)) {
+  if(ctype == conn_types_t::ap || (!this->connected() && millis() > this->disconnectTime + CONNECT_TIMEOUT)) {
     if(!this->softAPOpened && !this->openingSoftAP) {
       this->disconnectTime = millis();
       this->openSoftAP();
@@ -538,7 +396,7 @@ bool Network::connect(conn_types_t ctype) {
   
   return true;
 }
-uint32_t Network::getChipId() {
+uint32_t SomfyNetwork::getChipId() {
   uint32_t chipId = 0;
   uint64_t mac = ESP.getEfuseMac();
   for(int i=0; i<17; i=i+8) {
@@ -546,7 +404,7 @@ uint32_t Network::getChipId() {
   }
   return chipId;
 }
-bool Network::getStrongestAP(const char *ssid, uint8_t *bssid, int32_t *channel) {
+bool SomfyNetwork::getStrongestAP(const char *ssid, uint8_t *bssid, int32_t *channel) {
   // The new AP must be at least 10dbm greater.
   int32_t strength = this->connected() ? WiFi.RSSI() + 10 : -127;
   int32_t chan = -1;
@@ -567,7 +425,7 @@ bool Network::getStrongestAP(const char *ssid, uint8_t *bssid, int32_t *channel)
   WiFi.scanDelete();
   return chan > 0;
 }
-bool Network::openSoftAP() {
+bool SomfyNetwork::openSoftAP() {
   if(this->softAPOpened || this->openingSoftAP) return true;
   if(this->connected()) WiFi.disconnect(false);
   this->openingSoftAP = true;
@@ -578,20 +436,19 @@ bool Network::openSoftAP() {
   delay(200);
   return true;
 }
-bool Network::connected() {
+bool SomfyNetwork::connected() {
   if(this->connecting()) return false;
   else if(this->connType == conn_types_t::unset) return false;
   else if(this->connType == conn_types_t::wifi) return WiFi.status() == WL_CONNECTED;
-  else if(this->connType == conn_types_t::ethernet) return ETH.linkUp();
   else return this->connType != conn_types_t::unset;
   return false;
 }
-bool Network::connecting() {
+bool SomfyNetwork::connecting() {
   if(this->_connecting && millis() > this->connectStart + CONNECT_TIMEOUT) this->_connecting = false; 
   return this->_connecting; 
 }
-void Network::clearConnecting() { this->_connecting = false; }
-void Network::networkEvent(WiFiEvent_t event) {
+void SomfyNetwork::clearConnecting() { this->_connecting = false; }
+void SomfyNetwork::networkEvent(WiFiEvent_t event) {
   switch(event) {
     case ARDUINO_EVENT_WIFI_READY:               Serial.println("(evt) WiFi interface ready"); break;
     case ARDUINO_EVENT_WIFI_SCAN_DONE:           
@@ -620,40 +477,6 @@ void Network::networkEvent(WiFiEvent_t event) {
       net.setConnected(conn_types_t::wifi);
       break;
     case ARDUINO_EVENT_WIFI_STA_LOST_IP:        Serial.println("Lost IP address and IP address is reset to 0"); break;    
-    case ARDUINO_EVENT_ETH_GOT_IP:
-      // If the Wifi is connected then drop that connection
-      if(WiFi.status() == WL_CONNECTED) WiFi.disconnect(true);
-      Serial.print("Got Ethernet IP ");
-      Serial.println(ETH.localIP());
-      net.connectTime = millis();
-      net.connType = conn_types_t::ethernet;
-      if(settings.IP.dhcp) {
-        settings.IP.ip = ETH.localIP();
-        settings.IP.subnet = ETH.subnetMask();
-        settings.IP.gateway = ETH.gatewayIP();
-        settings.IP.dns1 = ETH.dnsIP(0);
-        settings.IP.dns2 = ETH.dnsIP(1);
-      }     
-      net.setConnected(conn_types_t::ethernet);
-      break;
-    case ARDUINO_EVENT_ETH_CONNECTED:
-      Serial.print("(evt) Ethernet Connected ");
-      break;
-    case ARDUINO_EVENT_ETH_DISCONNECTED:
-      Serial.println("(evt) Ethernet Disconnected");
-      net.connType = conn_types_t::unset;
-      net.disconnectTime = millis();
-      net.clearConnecting();
-      break;
-    case ARDUINO_EVENT_ETH_START:               
-      Serial.println("(evt) Ethernet Started"); 
-      net.ethStarted = true;
-      break;
-    case ARDUINO_EVENT_ETH_STOP:
-      Serial.println("(evt) Ethernet Stopped");
-      net.connType = conn_types_t::unset;
-      net.ethStarted = false;
-      break;
     case ARDUINO_EVENT_WIFI_AP_START:
       Serial.print("(evt) WiFi SoftAP Started IP:");
       Serial.println(WiFi.softAPIP());
@@ -666,11 +489,11 @@ void Network::networkEvent(WiFiEvent_t event) {
       break;      
     default:
       if(event > ARDUINO_EVENT_ETH_START)
-        Serial.printf("(evt) Unknown Ethernet Event %d\n", event);
+        Serial.printf("(evt) Unknown network Event %d\n", event);
       break;
   }
 }
-void Network::emitHeap(uint8_t num) {
+void SomfyNetwork::emitHeap(uint8_t num) {
   bool bEmit = false;
   bool bTimeEmit = millis() - _lastHeapEmit > 15000;
   bool bRoomEmit = false;

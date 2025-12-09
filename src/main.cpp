@@ -1,23 +1,23 @@
+#include <Arduino.h>
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <esp_task_wdt.h>
 #include "ConfigSettings.h"
-#include "Network.h"
+#include "SomfyNetwork.h"
 #include "Web.h"
 #include "Sockets.h"
 #include "Utils.h"
 #include "Somfy.h"
 #include "MQTT.h"
-#include "GitOTA.h"
+
 
 ConfigSettings settings;
 Web webServer;
 SocketEmitter sockEmit;
-Network net;
+SomfyNetwork net;
 rebootDelay_t rebootDelay;
 SomfyShadeController somfy;
 MQTTClass mqtt;
-GitUpdater git;
 
 uint32_t oldheap = 0;
 void setup() {
@@ -36,9 +36,15 @@ void setup() {
   delay(1000);
   net.setup();  
   somfy.begin();
-  //git.checkForUpdate();
-  esp_task_wdt_init(7, true); //enable panic so ESP32 restarts
-  esp_task_wdt_add(NULL); //add current thread to WDT watch
+
+  // Reconfigure the existing TWDT (already initialized by Arduino framework)
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = 7000,
+    .idle_core_mask = 1,
+    .trigger_panic = true
+  };
+  esp_task_wdt_reconfigure(&wdt_config);
+  esp_task_wdt_add(nullptr);
 
 }
 
@@ -64,10 +70,6 @@ void loop() {
   timing = millis();
   esp_task_wdt_reset();
   if(net.connected() || net.softAPOpened) {
-    if(!rebootDelay.reboot && net.connected() && !net.softAPOpened) {
-      git.loop();
-      esp_task_wdt_reset();
-    }
     webServer.loop();
     esp_task_wdt_reset();
     if(millis() - timing > 100) Serial.printf("Timing WebServer: %ldms\n", millis() - timing);

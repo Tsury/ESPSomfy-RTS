@@ -1,5 +1,11 @@
 #ifndef SSDP_h
 #define SSDP_h
+
+// If SSDP is not enabled, use the stub instead
+#ifndef ENABLE_SSDP
+#include "SSDPStub.h"
+#else
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <AsyncUDP.h>
@@ -177,7 +183,9 @@ class SSDPClass {
     void setActive(uint8_t ndx, bool bActive);
     void setChipId(uint8_t ndx, uint32_t chipId);
 };
-#if !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_SSSDP)
+#if !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_SSDP)
 extern SSDPClass SSDP;
 #endif
-#endif
+
+#endif  // ENABLE_SSDP
+#endif  // SSDP_h

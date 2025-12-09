@@ -2,6 +2,7 @@
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
 #include <SPI.h>
 #include <WebServer.h>
+#include <esp_chip_info.h>
 #include <esp_task_wdt.h>
 #include "Utils.h"
 #include "ConfigSettings.h"
@@ -9,14 +10,12 @@
 #include "Sockets.h"
 #include "MQTT.h"
 #include "ConfigFile.h"
-#include "GitOTA.h"
 
 extern Preferences pref;
 extern SomfyShadeController somfy;
 extern SocketEmitter sockEmit;
 extern ConfigSettings settings;
 extern MQTTClass mqtt;
-extern GitUpdater git;
 
 
 uint8_t rxmode = 0;  // Indicates whether the radio is in receive mode.  Just to ensure there isn't more than one interrupt hooked.
@@ -621,7 +620,6 @@ bool SomfyShadeController::begin() {
   return true;
 }
 void SomfyShadeController::commit() {
-  if(git.lockFS) return;
   esp_task_wdt_reset(); // Make sure we don't reset inadvertently.
   ShadeConfigFile file;
   file.begin();
@@ -631,7 +629,6 @@ void SomfyShadeController::commit() {
   this->lastCommit = millis();
 }
 void SomfyShadeController::writeBackup() {
-  if(git.lockFS) return;
   esp_task_wdt_reset(); // Make sure we don't reset inadvertently.
   ShadeConfigFile file;
   file.begin("/controller.backup", false);
@@ -1469,15 +1466,15 @@ void SomfyShade::publishState() {
 void SomfyShade::publishDisco() {
   if(!mqtt.connected() || !settings.MQTT.pubDisco) return;
   char topic[128] = "";
-  DynamicJsonDocument doc(2048);
+  JsonDocument doc;
   JsonObject obj = doc.to<JsonObject>();
   snprintf(topic, sizeof(topic), "%s/shades/%d", settings.MQTT.rootTopic, this->shadeId);
   obj["~"] = topic;
-  JsonObject dobj = obj.createNestedObject("device");
+  JsonObject dobj = obj["device"].to<JsonObject>();
   dobj["hw_version"] = settings.fwVersion.name;
   dobj["name"] = settings.hostname;
   dobj["mf"] = "rstrouse";
-  JsonArray arrids = dobj.createNestedArray("identifiers");
+  JsonArray arrids = dobj["identifiers"].to<JsonArray>();
   //snprintf(topic, sizeof(topic), "mqtt_espsomfyrts_%s_shade%d", settings.serverId, this->shadeId);
   snprintf(topic, sizeof(topic), "mqtt_espsomfyrts_%s", settings.serverId);
   arrids.add(topic);
@@ -3142,7 +3139,7 @@ bool SomfyShade::usesPin(uint8_t pin) {
 int8_t SomfyShade::validateJSON(JsonObject &obj) {
   int8_t ret = 0;
   shade_types type = this->shadeType;
-  if(obj.containsKey("shadeType")) {
+  if(!obj["shadeType"].isNull()) {
     if(obj["shadeType"].is<const char *>()) {
       if(strncmp(obj["shadeType"].as<const char *>(), "roller", 7) == 0)
         type = shade_types::roller;
@@ -3171,14 +3168,14 @@ int8_t SomfyShade::validateJSON(JsonObject &obj) {
       this->shadeType = static_cast<shade_types>(obj["shadeType"].as<uint8_t>());
     }
   }
-  if(obj.containsKey("proto")) {
+  if(!obj["proto"].isNull()) {
     radio_proto proto = this->proto;
     if(proto == radio_proto::GP_Relay || proto == radio_proto::GP_Remote) {
       // Check to see if we are using the up and or down
       // GPIOs anywhere else.
-      uint8_t upPin = obj.containsKey("gpioUp") ? obj["gpioUp"].as<uint8_t>() : this->gpioUp;
-      uint8_t downPin = obj.containsKey("gpioDown") ? obj["gpioDown"].as<uint8_t>() : this->gpioDown;
-      uint8_t myPin = obj.containsKey("gpioMy") ? obj["gpioMy"].as<uint8_t>() : this->gpioMy;
+      uint8_t upPin = !obj["gpioUp"].isNull() ? obj["gpioUp"].as<uint8_t>() : this->gpioUp;
+      uint8_t downPin = !obj["gpioDown"].isNull() ? obj["gpioDown"].as<uint8_t>() : this->gpioDown;
+      uint8_t myPin = !obj["gpioMy"].isNull() ? obj["gpioMy"].as<uint8_t>() : this->gpioMy;
       if(type == shade_types::drycontact || 
         ((type == shade_types::garage1 || type == shade_types::lgate1 || type == shade_types::cgate1 || type == shade_types::rgate1) 
         && proto == radio_proto::GP_Remote)) upPin = myPin = 255;
@@ -3189,12 +3186,6 @@ int8_t SomfyShade::validateJSON(JsonObject &obj) {
           (downPin != 255 && somfy.transceiver.usesPin(downPin)) ||
           (myPin != 255 && somfy.transceiver.usesPin(myPin)))
           ret = -10;
-      }
-      if(settings.connType == conn_types_t::ethernet || settings.connType == conn_types_t::ethernetpref) {
-        if((upPin != 255 && settings.Ethernet.usesPin(upPin)) ||
-          (downPin != 255 && somfy.transceiver.usesPin(downPin)) ||
-          (myPin != 255 && somfy.transceiver.usesPin(myPin)))
-          ret = -11;
       }
       if(ret == 0) {
         for(uint8_t i = 0; i < SOMFY_MAX_SHADES; i++) {
@@ -3215,28 +3206,28 @@ int8_t SomfyShade::validateJSON(JsonObject &obj) {
 int8_t SomfyShade::fromJSON(JsonObject &obj) {
   int8_t err = this->validateJSON(obj);
   if(err == 0) {
-    if(obj.containsKey("name")) strlcpy(this->name, obj["name"], sizeof(this->name));
-    if(obj.containsKey("roomId")) this->roomId = obj["roomId"];
-    if(obj.containsKey("upTime")) this->upTime = obj["upTime"];
-    if(obj.containsKey("downTime")) this->downTime = obj["downTime"];
-    if(obj.containsKey("remoteAddress")) this->setRemoteAddress(obj["remoteAddress"]);
-    if(obj.containsKey("tiltTime")) this->tiltTime = obj["tiltTime"];
-    if(obj.containsKey("stepSize")) this->stepSize = obj["stepSize"];
-    if(obj.containsKey("hasTilt")) this->tiltType = static_cast<bool>(obj["hasTilt"]) ? tilt_types::none : tilt_types::tiltmotor;
-    if(obj.containsKey("bitLength")) this->bitLength = obj["bitLength"];
-    if(obj.containsKey("proto")) this->proto = static_cast<radio_proto>(obj["proto"].as<uint8_t>());
-    if(obj.containsKey("sunSensor")) this->setSunSensor(obj["sunSensor"]);
-    if(obj.containsKey("simMy")) this->setSimMy(obj["simMy"]);
-    if(obj.containsKey("light")) this->setLight(obj["light"]);
-    if(obj.containsKey("gpioFlags")) this->gpioFlags = obj["gpioFlags"];
-    if(obj.containsKey("gpioLLTrigger")) {
+    if(!obj["name"].isNull()) strlcpy(this->name, obj["name"], sizeof(this->name));
+    if(!obj["roomId"].isNull()) this->roomId = obj["roomId"];
+    if(!obj["upTime"].isNull()) this->upTime = obj["upTime"];
+    if(!obj["downTime"].isNull()) this->downTime = obj["downTime"];
+    if(!obj["remoteAddress"].isNull()) this->setRemoteAddress(obj["remoteAddress"]);
+    if(!obj["tiltTime"].isNull()) this->tiltTime = obj["tiltTime"];
+    if(!obj["stepSize"].isNull()) this->stepSize = obj["stepSize"];
+    if(!obj["hasTilt"].isNull()) this->tiltType = static_cast<bool>(obj["hasTilt"]) ? tilt_types::none : tilt_types::tiltmotor;
+    if(!obj["bitLength"].isNull()) this->bitLength = obj["bitLength"];
+    if(!obj["proto"].isNull()) this->proto = static_cast<radio_proto>(obj["proto"].as<uint8_t>());
+    if(!obj["sunSensor"].isNull()) this->setSunSensor(obj["sunSensor"]);
+    if(!obj["simMy"].isNull()) this->setSimMy(obj["simMy"]);
+    if(!obj["light"].isNull()) this->setLight(obj["light"]);
+    if(!obj["gpioFlags"].isNull()) this->gpioFlags = obj["gpioFlags"];
+    if(!obj["gpioLLTrigger"].isNull()) {
       if(obj["gpioLLTrigger"].as<bool>())
         this->gpioFlags |= (uint8_t)gpio_flags_t::LowLevelTrigger;
       else
         this->gpioFlags &= ~(uint8_t)gpio_flags_t::LowLevelTrigger;
     }
     
-    if(obj.containsKey("shadeType")) {
+    if(!obj["shadeType"].isNull()) {
       if(obj["shadeType"].is<const char *>()) {
         if(strncmp(obj["shadeType"].as<const char *>(), "roller", 7) == 0)
           this->shadeType = shade_types::roller;
@@ -3265,10 +3256,10 @@ int8_t SomfyShade::fromJSON(JsonObject &obj) {
         this->shadeType = static_cast<shade_types>(obj["shadeType"].as<uint8_t>());
       }
     }
-    if(obj.containsKey("flipCommands")) this->flipCommands = obj["flipCommands"].as<bool>();
-    if(obj.containsKey("flipPosition")) this->flipPosition = obj["flipPosition"].as<bool>();
-    if(obj.containsKey("repeats")) this->repeats = obj["repeats"];
-    if(obj.containsKey("tiltType")) {
+    if(!obj["flipCommands"].isNull()) this->flipCommands = obj["flipCommands"].as<bool>();
+    if(!obj["flipPosition"].isNull()) this->flipPosition = obj["flipPosition"].as<bool>();
+    if(!obj["repeats"].isNull()) this->repeats = obj["repeats"];
+    if(!obj["tiltType"].isNull()) {
       if(obj["tiltType"].is<const char *>()) {
         if(strncmp(obj["tiltType"].as<const char *>(), "none", 4) == 0)
           this->tiltType = tilt_types::none;
@@ -3283,7 +3274,7 @@ int8_t SomfyShade::fromJSON(JsonObject &obj) {
         this->tiltType = static_cast<tilt_types>(obj["tiltType"].as<uint8_t>());
       }
     }
-    if(obj.containsKey("linkedAddresses")) {
+    if(!obj["linkedAddresses"].isNull()) {
       uint32_t linkedAddresses[SOMFY_MAX_LINKED_REMOTES];
       memset(linkedAddresses, 0x00, sizeof(linkedAddresses));
       JsonArray arr = obj["linkedAddresses"];
@@ -3295,15 +3286,15 @@ int8_t SomfyShade::fromJSON(JsonObject &obj) {
         this->linkedRemotes[j].setRemoteAddress(linkedAddresses[j]);
       }
     }
-    if(obj.containsKey("flags")) this->flags = obj["flags"];
+    if(!obj["flags"].isNull()) this->flags = obj["flags"];
     if(this->proto == radio_proto::GP_Remote || this->proto == radio_proto::GP_Relay) {
-      if(obj.containsKey("gpioUp")) this->gpioUp = obj["gpioUp"];
-      if(obj.containsKey("gpioDown")) this->gpioDown = obj["gpioDown"];
+      if(!obj["gpioUp"].isNull()) this->gpioUp = obj["gpioUp"];
+      if(!obj["gpioDown"].isNull()) this->gpioDown = obj["gpioDown"];
       pinMode(this->gpioUp, OUTPUT);
       pinMode(this->gpioDown, OUTPUT);
     }
     if(this->proto == radio_proto::GP_Remote) {
-      if(obj.containsKey("gpioMy")) this->gpioMy = obj["gpioMy"];
+      if(!obj["gpioMy"].isNull()) this->gpioMy = obj["gpioMy"];
       pinMode(this->gpioMy, OUTPUT);
     }
   }
@@ -3430,8 +3421,8 @@ bool SomfyShade::toJSON(JsonObject &obj) {
 }
 */
 bool SomfyRoom::fromJSON(JsonObject &obj) {
-  if(obj.containsKey("name")) strlcpy(this->name, obj["name"], sizeof(this->name));
-  if(obj.containsKey("sortOrder")) this->sortOrder = obj["sortOrder"];
+  if(!obj["name"].isNull()) strlcpy(this->name, obj["name"], sizeof(this->name));
+  if(!obj["sortOrder"].isNull()) this->sortOrder = obj["sortOrder"];
   return true;
 }
 /*
@@ -3449,16 +3440,16 @@ void SomfyRoom::toJSON(JsonResponse &json) {
 }
 
 bool SomfyGroup::fromJSON(JsonObject &obj) {
-  if(obj.containsKey("name")) strlcpy(this->name, obj["name"], sizeof(this->name));
-  if(obj.containsKey("roomId")) this->roomId = obj["roomId"];
-  if(obj.containsKey("remoteAddress")) this->setRemoteAddress(obj["remoteAddress"]);
-  if(obj.containsKey("bitLength")) this->bitLength = obj["bitLength"];
-  if(obj.containsKey("proto")) this->proto = static_cast<radio_proto>(obj["proto"].as<uint8_t>());
-  if(obj.containsKey("flipCommands")) this->flipCommands = obj["flipCommands"].as<bool>();
+  if(!obj["name"].isNull()) strlcpy(this->name, obj["name"], sizeof(this->name));
+  if(!obj["roomId"].isNull()) this->roomId = obj["roomId"];
+  if(!obj["remoteAddress"].isNull()) this->setRemoteAddress(obj["remoteAddress"]);
+  if(!obj["bitLength"].isNull()) this->bitLength = obj["bitLength"];
+  if(!obj["proto"].isNull()) this->proto = static_cast<radio_proto>(obj["proto"].as<uint8_t>());
+  if(!obj["flipCommands"].isNull()) this->flipCommands = obj["flipCommands"].as<bool>();
   
-  //if(obj.containsKey("sunSensor")) this->hasSunSensor() = obj["sunSensor"];  This is calculated
-  if(obj.containsKey("repeats")) this->repeats = obj["repeats"];
-  if(obj.containsKey("linkedShades")) {
+  //if(!obj["sunSensor"].isNull()) this->hasSunSensor() = obj["sunSensor"];  This is calculated
+  if(!obj["repeats"].isNull()) this->repeats = obj["repeats"];
+  if(!obj["linkedShades"].isNull()) {
     uint8_t linkedShades[SOMFY_MAX_GROUPED_SHADES];
     memset(linkedShades, 0x00, sizeof(linkedShades));
     JsonArray arr = obj["linkedShades"];
@@ -4697,7 +4688,7 @@ bool Transceiver::toJSON(JsonObject& obj) {
 }
 */
 bool Transceiver::fromJSON(JsonObject& obj) {
-    if (obj.containsKey("config")) {
+    if (!obj["config"].isNull()) {
       JsonObject objConfig = obj["config"];
       this->config.fromJSON(objConfig);
     }
@@ -4726,19 +4717,19 @@ bool Transceiver::end() {
 }
 void transceiver_config_t::fromJSON(JsonObject& obj) {
     //Serial.print("Deserialize Radio JSON ");
-    if(obj.containsKey("type")) this->type = obj["type"];
-    if(obj.containsKey("CSNPin")) this->CSNPin = obj["CSNPin"];
-    if(obj.containsKey("MISOPin")) this->MISOPin = obj["MISOPin"];
-    if(obj.containsKey("MOSIPin")) this->MOSIPin = obj["MOSIPin"];
-    if(obj.containsKey("RXPin")) this->RXPin = obj["RXPin"];
-    if(obj.containsKey("SCKPin")) this->SCKPin = obj["SCKPin"];
-    if(obj.containsKey("TXPin")) this->TXPin = obj["TXPin"];
-    if(obj.containsKey("rxBandwidth")) this->rxBandwidth = obj["rxBandwidth"]; // float
-    if(obj.containsKey("frequency")) this->frequency = obj["frequency"];  // float
-    if(obj.containsKey("deviation")) this->deviation = obj["deviation"];  // float
-    if(obj.containsKey("enabled")) this->enabled = obj["enabled"];
-    if(obj.containsKey("txPower")) this->txPower = obj["txPower"];
-    if(obj.containsKey("proto")) this->proto = static_cast<radio_proto>(obj["proto"].as<uint8_t>());
+  if(!obj["type"].isNull()) this->type = obj["type"];
+  if(!obj["CSNPin"].isNull()) this->CSNPin = obj["CSNPin"];
+  if(!obj["MISOPin"].isNull()) this->MISOPin = obj["MISOPin"];
+  if(!obj["MOSIPin"].isNull()) this->MOSIPin = obj["MOSIPin"];
+  if(!obj["RXPin"].isNull()) this->RXPin = obj["RXPin"];
+  if(!obj["SCKPin"].isNull()) this->SCKPin = obj["SCKPin"];
+  if(!obj["TXPin"].isNull()) this->TXPin = obj["TXPin"];
+  if(!obj["rxBandwidth"].isNull()) this->rxBandwidth = obj["rxBandwidth"]; // float
+  if(!obj["frequency"].isNull()) this->frequency = obj["frequency"];  // float
+  if(!obj["deviation"].isNull()) this->deviation = obj["deviation"];  // float
+  if(!obj["enabled"].isNull()) this->enabled = obj["enabled"];
+  if(!obj["txPower"].isNull()) this->txPower = obj["txPower"];
+  if(!obj["proto"].isNull()) this->proto = static_cast<radio_proto>(obj["proto"].as<uint8_t>());
     /*
     if (obj.containsKey("internalCCMode")) this->internalCCMode = obj["internalCCMode"];
     if (obj.containsKey("modulationMode")) this->modulationMode = obj["modulationMode"];
@@ -4908,6 +4899,15 @@ void transceiver_config_t::load() {
         this->MISOPin = 17;
         this->SCKPin = 15;
         this->CSNPin = 14;
+        break;
+      case esp_chip_model_t::CHIP_ESP32C6:
+        Serial.println("Setting C6 Transceiver Defaults...");
+        this->TXPin = 17;    // D3 (originally D7, 21, I prefered D3 for easy soldering) -> GDO0
+        this->RXPin = 16;    // D6 (originally D4, 22, I prefered D6 for easy soldering) -> GDO2
+        this->MOSIPin = 18;  // D10 -> MOSI
+        this->MISOPin = 20;  // D9 -> MISO
+        this->SCKPin = 19;   // D8 -> SCK
+        this->CSNPin = 2;    // D2 -> CSN
         break;
       default:
         this->TXPin = 13;

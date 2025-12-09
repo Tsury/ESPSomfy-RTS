@@ -12,17 +12,14 @@
 #include "WResp.h"
 #include "Web.h"
 #include "MQTT.h"
-#include "GitOTA.h"
-#include "Network.h"
+#include "SomfyNetwork.h"
 
 extern ConfigSettings settings;
-extern SSDPClass SSDP;
 extern rebootDelay_t rebootDelay;
 extern SomfyShadeController somfy;
 extern Web webServer;
 extern MQTTClass mqtt;
-extern GitUpdater git;
-extern Network net;
+extern SomfyNetwork net;
 
 //#define WEB_MAX_RESPONSE 34768
 #define WEB_MAX_RESPONSE 4096
@@ -139,7 +136,7 @@ void Web::handleLogout(WebServer &server) {
 void Web::handleLogin(WebServer &server) {
     webServer.sendCORSHeaders(server);
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     JsonObject obj = doc.to<JsonObject>();
     char token[65];
     memset(&token, 0x00, sizeof(token));
@@ -161,7 +158,7 @@ void Web::handleLogin(WebServer &server) {
     memset(password, 0x00, sizeof(password));
     memset(pin, 0x00, sizeof(pin));
     if(server.hasArg("plain")) {
-      DynamicJsonDocument docin(512);
+      JsonDocument docin;
       DeserializationError err = deserializeJson(docin, server.arg("plain"));
       if (err) {
         this->handleDeserializationError(server, err);
@@ -169,9 +166,9 @@ void Web::handleLogin(WebServer &server) {
       }
       else {
           JsonObject objin = docin.as<JsonObject>();
-          if(objin.containsKey("username") && objin["username"]) strlcpy(username, objin["username"], sizeof(username));
-          if(objin.containsKey("password") && objin["password"]) strlcpy(password, objin["password"], sizeof(password));
-          if(objin.containsKey("pin") && objin["pin"]) strlcpy(pin, objin["pin"], sizeof(pin));
+          if(!objin["username"].isNull() && objin["username"]) strlcpy(username, objin["username"], sizeof(username));
+          if(!objin["password"].isNull() && objin["password"]) strlcpy(password, objin["password"], sizeof(password));
+          if(!objin["pin"].isNull() && objin["pin"]) strlcpy(pin, objin["pin"], sizeof(pin));
       }
     }
     else {
@@ -209,10 +206,6 @@ void Web::handleLogin(WebServer &server) {
     return;
 }
 void Web::handleStreamFile(WebServer &server, const char *filename, const char *encoding) {
-  if(git.lockFS) {
-    server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"Filesystem update in progress\"}"));
-    return;
-  }
   webServer.sendCORSHeaders(server);
   if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
   esp_task_wdt_reset();
@@ -250,7 +243,12 @@ void Web::handleController(WebServer &server) {
     somfy.transceiver.toJSON(resp);
     resp.endObject();
     resp.beginObject("version");
-    git.toJSON(resp);
+    resp.beginObject("fwVersion");
+    settings.fwVersion.toJSON(resp);
+    resp.endObject();
+    resp.beginObject("appVersion");
+    settings.appVersion.toJSON(resp);
+    resp.endObject();
     resp.endObject();
     resp.beginArray("rooms");
     somfy.toJSONRooms(resp);
@@ -359,7 +357,7 @@ void Web::handleShadeCommand(WebServer& server) {
     }
     else if (server.hasArg("plain")) {
       Serial.println("Sending Shade Command");
-      DynamicJsonDocument doc(512);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, server.arg("plain"));
       if (err) {
         this->handleDeserializationError(server, err);
@@ -367,17 +365,17 @@ void Web::handleShadeCommand(WebServer& server) {
       }
       else {
         JsonObject obj = doc.as<JsonObject>();
-        if (obj.containsKey("shadeId")) shadeId = obj["shadeId"];
+        if (!obj["shadeId"].isNull()) shadeId = obj["shadeId"];
         else server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"No shade id was supplied.\"}"));
-        if (obj.containsKey("command")) {
-            String scmd = obj["command"];
-            command = translateSomfyCommand(scmd);
+        if (!obj["command"].isNull()) {
+          String scmd = obj["command"];
+          command = translateSomfyCommand(scmd);
         }
-        else if (obj.containsKey("target")) {
-            target = obj["target"].as<uint8_t>();
+        else if (!obj["target"].isNull()) {
+          target = obj["target"].as<uint8_t>();
         }
-        if (obj.containsKey("repeat")) repeat = obj["repeat"].as<uint8_t>();
-        if(obj.containsKey("stepSize")) stepSize = obj["stepSize"].as<uint8_t>();
+        if (!obj["repeat"].isNull()) repeat = obj["repeat"].as<uint8_t>();
+        if(!obj["stepSize"].isNull()) stepSize = obj["stepSize"].as<uint8_t>();
       }
     }
     else server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"No shade object supplied.\"}"));
@@ -420,7 +418,7 @@ void Web::handleRepeatCommand(WebServer& server) {
     if(server.hasArg("repeat")) repeat = atoi(server.arg("repeat").c_str());
     if(server.hasArg("stepSize")) stepSize = atoi(server.arg("stepSize").c_str());
     if(shadeId == 255 && groupId == 255 && server.hasArg("plain")) {
-      DynamicJsonDocument doc(512);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, server.arg("plain"));
       if (err) {
         this->handleDeserializationError(server, err);
@@ -428,18 +426,18 @@ void Web::handleRepeatCommand(WebServer& server) {
       }
       else {
         JsonObject obj = doc.as<JsonObject>();
-        if (obj.containsKey("shadeId")) shadeId = obj["shadeId"];
-        if(obj.containsKey("groupId")) groupId = obj["groupId"];
-        if(obj.containsKey("stepSize")) stepSize = obj["stepSize"];
-        if (obj.containsKey("command")) {
-            String scmd = obj["command"];
-            command = translateSomfyCommand(scmd);
+        if (!obj["shadeId"].isNull()) shadeId = obj["shadeId"];
+        if(!obj["groupId"].isNull()) groupId = obj["groupId"];
+        if(!obj["stepSize"].isNull()) stepSize = obj["stepSize"];
+        if (!obj["command"].isNull()) {
+          String scmd = obj["command"];
+          command = translateSomfyCommand(scmd);
         }
-        if (obj.containsKey("repeat")) repeat = obj["repeat"].as<uint8_t>();
+        if (!obj["repeat"].isNull()) repeat = obj["repeat"].as<uint8_t>();
       }
     }
-    //DynamicJsonDocument sdoc(512);
-    //JsonObject sobj = sdoc.to<JsonObject>();
+      // JsonDocument sdoc;
+      // JsonObject sobj = sdoc.to<JsonObject>();
     if(shadeId != 255) {
       SomfyShade *shade = somfy.getShadeById(shadeId);
       if(!shade) {
@@ -506,7 +504,7 @@ void Web::handleGroupCommand(WebServer &server) {
     }
     else if (server.hasArg("plain")) {
       Serial.println("Sending Group Command");
-      DynamicJsonDocument doc(256);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, server.arg("plain"));
       if (err) {
         this->handleDeserializationError(server, err);
@@ -514,17 +512,17 @@ void Web::handleGroupCommand(WebServer &server) {
       }
       else {
         JsonObject obj = doc.as<JsonObject>();
-        if (obj.containsKey("groupId")) groupId = obj["groupId"];
+        if (!obj["groupId"].isNull()) groupId = obj["groupId"];
         else {
           server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"No group id was supplied.\"}"));
           return;
         }
-        if (obj.containsKey("command")) {
+        if (!obj["command"].isNull()) {
           String scmd = obj["command"];
           command = translateSomfyCommand(scmd);
         }
-        if(obj.containsKey("repeat")) repeat = obj["repeat"].as<uint8_t>();
-        if(obj.containsKey("stepSize")) stepSize = obj["stepSize"].as<uint8_t>();
+        if(!obj["repeat"].isNull()) repeat = obj["repeat"].as<uint8_t>();
+        if(!obj["stepSize"].isNull()) stepSize = obj["stepSize"].as<uint8_t>();
       }
     }
     else server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"No group object supplied.\"}"));
@@ -563,7 +561,7 @@ void Web::handleTiltCommand(WebServer &server) {
     }
     else if (server.hasArg("plain")) {
       Serial.println("Sending Shade Tilt Command");
-      DynamicJsonDocument doc(256);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, server.arg("plain"));
       if (err) {
         this->handleDeserializationError(server, err);
@@ -571,13 +569,13 @@ void Web::handleTiltCommand(WebServer &server) {
       }
       else {
         JsonObject obj = doc.as<JsonObject>();
-        if (obj.containsKey("shadeId")) shadeId = obj["shadeId"];
+        if (!obj["shadeId"].isNull()) shadeId = obj["shadeId"];
         else server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"No shade id was supplied.\"}"));
-        if (obj.containsKey("command")) {
+        if (!obj["command"].isNull()) {
           String scmd = obj["command"];
           command = translateSomfyCommand(scmd);
         }
-        else if(obj.containsKey("target")) {
+        else if(!obj["target"].isNull()) {
           target = obj["target"].as<uint8_t>();
         }
       }
@@ -632,7 +630,7 @@ void Web::handleRoom(WebServer &server) {
     // We are updating an existing room.
     if (server.hasArg("plain")) {
       Serial.println("Updating a room");
-      DynamicJsonDocument doc(512);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, server.arg("plain"));
       if (err) {
         this->handleDeserializationError(server, err);
@@ -640,7 +638,7 @@ void Web::handleRoom(WebServer &server) {
       }
       else {
         JsonObject obj = doc.as<JsonObject>();
-        if (obj.containsKey("roomId")) {
+        if (!obj["roomId"].isNull()) {
           SomfyRoom* room = somfy.getRoomById(obj["roomId"]);
           if (room) {
             uint8_t err = room->fromJSON(obj);
@@ -694,7 +692,7 @@ void Web::handleShade(WebServer &server) {
     // We are updating an existing shade.
     if (server.hasArg("plain")) {
       Serial.println("Updating a shade");
-      DynamicJsonDocument doc(512);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, server.arg("plain"));
       if (err) {
         this->handleDeserializationError(server, err);
@@ -702,7 +700,7 @@ void Web::handleShade(WebServer &server) {
       }
       else {
         JsonObject obj = doc.as<JsonObject>();
-        if (obj.containsKey("shadeId")) {
+        if (!obj["shadeId"].isNull()) {
           SomfyShade* shade = somfy.getShadeById(obj["shadeId"]);
           if (shade) {
             uint8_t err = shade->fromJSON(obj);
@@ -756,7 +754,7 @@ void Web::handleGroup(WebServer &server) {
     // We are updating an existing group.
     if (server.hasArg("plain")) {
       Serial.println("Updating a group");
-      DynamicJsonDocument doc(512);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, server.arg("plain"));
       if (err) {
         this->handleDeserializationError(server, err);
@@ -764,7 +762,7 @@ void Web::handleGroup(WebServer &server) {
       }
       else {
         JsonObject obj = doc.as<JsonObject>();
-        if (obj.containsKey("groupId")) {
+        if (!obj["groupId"].isNull()) {
           SomfyGroup* group = somfy.getGroupById(obj["groupId"]);
           if (group) {
             group->fromJSON(obj);
@@ -791,22 +789,19 @@ void Web::handleDiscovery(WebServer &server) {
   if (method == HTTP_POST || method == HTTP_GET) {
     Serial.println("Discovery Requested");
     char connType[10] = "Unknown";
-    if(net.connType == conn_types_t::ethernet) strcpy(connType, "Ethernet");
-    else if(net.connType == conn_types_t::wifi) strcpy(connType, "Wifi");
+    if(net.connType == conn_types_t::wifi) strcpy(connType, "Wifi");
 
     JsonResponse resp;
     resp.beginResponse(&server, g_content, sizeof(g_content));
     resp.beginObject();
     resp.addElem("serverId", settings.serverId);
     resp.addElem("version", settings.fwVersion.name);
-    resp.addElem("latest", git.latest.name);
     resp.addElem("model", "ESPSomfyRTS");
     resp.addElem("hostname", settings.hostname);
     resp.addElem("authType", static_cast<uint8_t>(settings.Security.type));
     resp.addElem("permissions", settings.Security.permissions);
     resp.addElem("chipModel", settings.chipModel);
     resp.addElem("connType", connType);
-    resp.addElem("checkForUpdate", settings.checkForUpdate);
     resp.beginObject("memory");
     resp.addElem("max", ESP.getMaxAllocHeap());
     resp.addElem("free", ESP.getFreeHeap());
@@ -871,7 +866,7 @@ void Web::handleSetPositions(WebServer &server) {
   int8_t pos = (server.hasArg("position")) ? atoi(server.arg("position").c_str()) : -1;
   int8_t tiltPos = (server.hasArg("tiltPosition")) ? atoi(server.arg("tiltPosition").c_str()) : -1;
   if(server.hasArg("plain")) {
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
     if (err) {
       this->handleDeserializationError(server, err);
@@ -879,9 +874,9 @@ void Web::handleSetPositions(WebServer &server) {
     }
     else {
       JsonObject obj = doc.as<JsonObject>();
-      if(obj.containsKey("shadeId")) shadeId = obj["shadeId"];
-      if(obj.containsKey("position")) pos = obj["position"];
-      if(obj.containsKey("tiltPosition")) tiltPos = obj["tiltPosition"];
+      if(!obj["shadeId"].isNull()) shadeId = obj["shadeId"];
+      if(!obj["position"].isNull()) pos = obj["position"];
+      if(!obj["tiltPosition"].isNull()) tiltPos = obj["tiltPosition"];
     }
   }
   if(shadeId != 255) {
@@ -913,7 +908,7 @@ void Web::handleSetSensor(WebServer &server) {
   int8_t windy = (server.hasArg("windy")) ? atoi(server.arg("windy").c_str()) : -1;
   int8_t repeat = (server.hasArg("repeat")) ? atoi(server.arg("repeat").c_str()) : -1;
   if(server.hasArg("plain")) {
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
     if (err) {
       this->handleDeserializationError(server, err);
@@ -921,21 +916,21 @@ void Web::handleSetSensor(WebServer &server) {
     }
     else {
       JsonObject obj = doc.as<JsonObject>();
-      if(obj.containsKey("shadeId")) shadeId = obj["shadeId"].as<uint8_t>();
-      if(obj.containsKey("groupId")) groupId = obj["groupId"].as<uint8_t>();
-      if(obj.containsKey("sunny")) {
+      if(!obj["shadeId"].isNull()) shadeId = obj["shadeId"].as<uint8_t>();
+      if(!obj["groupId"].isNull()) groupId = obj["groupId"].as<uint8_t>();
+      if(!obj["sunny"].isNull()) {
         if(obj["sunny"].is<bool>())
           sunny = obj["sunny"].as<bool>() ? 1 : 0;
         else
           sunny = obj["sunny"].as<int8_t>();
       }
-      if(obj.containsKey("windy")) {
+      if(!obj["windy"].isNull()) {
         if(obj["windy"].is<bool>())
           windy = obj["windy"].as<bool>() ? 1 : 0;
         else
           windy = obj["windy"].as<int8_t>();
       }
-      if(obj.containsKey("repeat")) repeat = obj["repeat"].as<uint8_t>();
+      if(!obj["repeat"].isNull()) repeat = obj["repeat"].as<uint8_t>();
     }
   }
   if(shadeId != 255) {
@@ -971,47 +966,6 @@ void Web::handleSetSensor(WebServer &server) {
   }
   else {
     server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"shadeId was not provided\"}"));
-  }
-}
-void Web::handleDownloadFirmware(WebServer &server) {
-  webServer.sendCORSHeaders(server);
-  if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-  GitRepo repo;
-  GitRelease *rel = nullptr;
-  int8_t err = repo.getReleases();
-  Serial.println("downloadFirmware called...");
-  if(err == 0) {
-    if(server.hasArg("ver")) {
-      if(strcmp(server.arg("ver").c_str(), "latest") == 0) rel = &repo.releases[0];
-      else if(strcmp(server.arg("ver").c_str(), "main") == 0) {
-        rel = &repo.releases[GIT_MAX_RELEASES];
-      }
-      else {
-        for(uint8_t i = 0; i < GIT_MAX_RELEASES; i++) {
-          if(repo.releases[i].id == 0) continue;
-          if(strcmp(repo.releases[i].name, server.arg("ver").c_str()) == 0) {
-            rel = &repo.releases[i];  
-          }
-        }
-      }
-      if(rel) {
-        JsonResponse resp;
-        resp.beginResponse(&server, g_content, sizeof(g_content));
-        resp.beginObject();
-        rel->toJSON(resp);
-        resp.endObject();
-        resp.endResponse();
-        strcpy(git.targetRelease, rel->name);
-        git.status = GIT_AWAITING_UPDATE;
-      }
-      else
-        server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"Release not found in repo.\"}"));
-    }
-    else
-      server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"Release version not supplied.\"}"));
-  }
-  else {
-      server.send(err, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"Error communicating with Github.\"}"));
   }
 }
 void Web::handleNotFound(WebServer &server) {
@@ -1079,7 +1033,6 @@ void Web::begin() {
   apiServer.on("/group", HTTP_GET, [] () { webServer.handleGroup(apiServer); });
   apiServer.on("/setPositions", []() { webServer.handleSetPositions(apiServer); });
   apiServer.on("/setSensor", []() { webServer.handleSetSensor(apiServer); });
-  apiServer.on("/downloadFirmware", []() { webServer.handleDownloadFirmware(apiServer); });
   apiServer.on("/backup", []() { webServer.handleBackup(apiServer); });
   apiServer.on("/reboot", []() { webServer.handleReboot(apiServer); });
   
@@ -1096,38 +1049,6 @@ void Web::begin() {
   server.on("/loginContext", []() { webServer.handleLoginContext(server); });
   server.on("/shades.cfg", []() { webServer.handleStreamFile(server, "/shades.cfg", _encoding_text); });
   server.on("/shades.tmp", []() { webServer.handleStreamFile(server, "/shades.tmp", _encoding_text); });
-  server.on("/getReleases", []() {
-    webServer.sendCORSHeaders(server);
-    if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    GitRepo repo;
-    repo.getReleases();
-    git.setCurrentRelease(repo);
-    JsonResponse resp;
-    resp.beginResponse(&server, g_content, sizeof(g_content));
-    resp.beginObject();
-    repo.toJSON(resp);
-    resp.endObject();
-    resp.endResponse();
-  });
-  server.on("/downloadFirmware", []() { webServer.handleDownloadFirmware(server); });
-  server.on("/cancelFirmware", []() {
-    webServer.sendCORSHeaders(server);
-    if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    // If we are currently downloading the filesystem we cannot cancel.
-    if(!git.lockFS) {
-      git.status = GIT_UPDATE_CANCELLING;
-      JsonResponse resp;
-      resp.beginResponse(&server, g_content, sizeof(g_content));
-      resp.beginObject();
-      git.toJSON(resp);
-      resp.endObject();
-      resp.endResponse();
-      git.cancelled = true;
-    }
-    else {
-      server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"Cannot cancel during filesystem update.\"}"));
-    }
-  });
   server.on("/backup", []() { webServer.handleBackup(server, true); });
   server.on("/restore", HTTP_POST, []() {
     webServer.sendCORSHeaders(server);
@@ -1137,7 +1058,7 @@ void Web::begin() {
       restore_options_t opts;
       if(server.hasArg("data")) {
         Serial.println(server.arg("data"));
-        StaticJsonDocument<256> doc;
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("data"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1239,7 +1160,7 @@ void Web::begin() {
     SomfyRoom * room = nullptr;
     if (method == HTTP_POST || method == HTTP_PUT) {
       Serial.println("Adding a room");
-      DynamicJsonDocument doc(512);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, server.arg("plain"));
       if (err) {
         webServer.handleDeserializationError(server, err);
@@ -1280,7 +1201,7 @@ void Web::begin() {
     SomfyShade* shade = nullptr;
     if (method == HTTP_POST || method == HTTP_PUT) {
       Serial.println("Adding a shade");
-      DynamicJsonDocument doc(1024);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, server.arg("plain"));
       if (err) {
         webServer.handleDeserializationError(server, err);
@@ -1322,7 +1243,7 @@ void Web::begin() {
     SomfyGroup * group = nullptr;
     if (method == HTTP_POST || method == HTTP_PUT) {
       Serial.println("Adding a group");
-      DynamicJsonDocument doc(512);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, server.arg("plain"));
       if (err) {
         webServer.handleDeserializationError(server, err);
@@ -1408,7 +1329,7 @@ void Web::begin() {
       // We are updating an existing room.
       if (server.hasArg("plain")) {
         Serial.println("Updating a room");
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1416,7 +1337,7 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("roomId")) {
+          if (!obj["roomId"].isNull()) {
             SomfyRoom* room = somfy.getRoomById(obj["roomId"]);
             if (room) {
               room->fromJSON(obj);
@@ -1445,7 +1366,7 @@ void Web::begin() {
       // We are updating an existing shade.
       if (server.hasArg("plain")) {
         Serial.println("Updating a shade");
-        DynamicJsonDocument doc(1024);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1453,7 +1374,7 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("shadeId")) {
+          if (!obj["shadeId"].isNull()) {
             SomfyShade* shade = somfy.getShadeById(obj["shadeId"]);
             if (shade) {
               int8_t err = shade->fromJSON(obj);
@@ -1487,7 +1408,7 @@ void Web::begin() {
       // We are updating an existing shade.
       if (server.hasArg("plain")) {
         Serial.println("Updating a group");
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1495,7 +1416,7 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("groupId")) {
+          if (!obj["groupId"].isNull()) {
             SomfyGroup* group = somfy.getGroupById(obj["groupId"]);
             if (group) {
               group->fromJSON(obj);
@@ -1529,7 +1450,7 @@ void Web::begin() {
         if(server.hasArg("tilt")) tilt = atoi(server.arg("tilt").c_str());
       }
       else if (server.hasArg("plain")) {
-        DynamicJsonDocument doc(256);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1537,10 +1458,10 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("shadeId")) shadeId = obj["shadeId"];
+          if (!obj["shadeId"].isNull()) shadeId = obj["shadeId"];
           else server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"No shade id was supplied.\"}"));
-          if(obj.containsKey("pos")) pos = obj["pos"].as<int8_t>();
-          if(obj.containsKey("tilt")) tilt = obj["tilt"].as<int8_t>();
+          if(!obj["pos"].isNull()) pos = obj["pos"].as<int8_t>();
+          if(!obj["tilt"].isNull()) tilt = obj["tilt"].as<int8_t>();
         }
       }
       else server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"No shade object supplied.\"}"));
@@ -1574,7 +1495,7 @@ void Web::begin() {
       uint16_t rollingCode = 0;
       if (server.hasArg("plain")) {
         // Its coming in the body.
-        StaticJsonDocument<129> doc;
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1582,8 +1503,8 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("shadeId")) shadeId = obj["shadeId"];
-          if(obj.containsKey("rollingCode")) rollingCode = obj["rollingCode"];
+          if (!obj["shadeId"].isNull()) shadeId = obj["shadeId"];
+          if (!obj["rollingCode"].isNull()) rollingCode = obj["rollingCode"];
         }
       }
       else if (server.hasArg("shadeId")) {
@@ -1612,7 +1533,7 @@ void Web::begin() {
     uint8_t shadeId = 255;
     bool paired = false;
     if(server.hasArg("plain")) {
-      DynamicJsonDocument doc(512);
+      JsonDocument doc;
       DeserializationError err = deserializeJson(doc, server.arg("plain"));
       if(err) {
           webServer.handleDeserializationError(server, err);
@@ -1620,8 +1541,8 @@ void Web::begin() {
       }
       else {
         JsonObject obj = doc.as<JsonObject>();
-        if (obj.containsKey("shadeId")) shadeId = obj["shadeId"];
-        if(obj.containsKey("paired")) paired = obj["paired"];
+        if (!obj["shadeId"].isNull()) shadeId = obj["shadeId"];
+        if(!obj["paired"].isNull()) paired = obj["paired"];
       }
     }
     else if (server.hasArg("shadeId"))
@@ -1652,7 +1573,7 @@ void Web::begin() {
       uint8_t shadeId = 255;
       if (server.hasArg("plain")) {
         // Its coming in the body.
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1660,7 +1581,7 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("shadeId")) shadeId = obj["shadeId"];
+          if (!obj["shadeId"].isNull()) shadeId = obj["shadeId"];
         }
       }
       else if (server.hasArg("shadeId"))
@@ -1695,7 +1616,7 @@ void Web::begin() {
       uint32_t address = 0;
       if (server.hasArg("plain")) {
         Serial.println("Linking a repeater");
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1703,8 +1624,8 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("address")) address = obj["address"];
-          else if(obj.containsKey("remoteAddress")) address = obj["remoteAddress"];
+          if (!obj["address"].isNull()) address = obj["address"];
+          else if(!obj["remoteAddress"].isNull()) address = obj["remoteAddress"];
         }
       }
       else if(server.hasArg("address"))
@@ -1731,7 +1652,7 @@ void Web::begin() {
       uint32_t address = 0;
       if (server.hasArg("plain")) {
         Serial.println("Unlinking a repeater");
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1739,8 +1660,8 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("address")) address = obj["address"];
-          else if(obj.containsKey("remoteAddress")) address = obj["remoteAddress"];
+          if (!obj["address"].isNull()) address = obj["address"];
+          else if(!obj["remoteAddress"].isNull()) address = obj["remoteAddress"];
         }
       }
       else if(server.hasArg("address"))
@@ -1766,7 +1687,7 @@ void Web::begin() {
     if (method == HTTP_PUT || method == HTTP_POST) {
       // We are updating an existing shade by adding a linked remote.
       if (server.hasArg("plain")) {
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1774,10 +1695,10 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("shadeId")) {
+          if (!obj["shadeId"].isNull()) {
             SomfyShade* shade = somfy.getShadeById(obj["shadeId"]);
             if (shade) {
-              if (obj.containsKey("remoteAddress")) {
+              if (!obj["remoteAddress"].isNull()) {
                 shade->unlinkRemote(obj["remoteAddress"]);
               }
               else {
@@ -1806,7 +1727,7 @@ void Web::begin() {
       // We are updating an existing shade by adding a linked remote.
       if (server.hasArg("plain")) {
         Serial.println("Linking a remote");
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1814,11 +1735,11 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("shadeId")) {
+          if (!obj["shadeId"].isNull()) {
             SomfyShade* shade = somfy.getShadeById(obj["shadeId"]);
             if (shade) {
-              if (obj.containsKey("remoteAddress")) {
-                if (obj.containsKey("rollingCode")) shade->linkRemote(obj["remoteAddress"], obj["rollingCode"]);
+              if (!obj["remoteAddress"].isNull()) {
+                if (!obj["rollingCode"].isNull()) shade->linkRemote(obj["remoteAddress"], obj["rollingCode"]);
                 else shade->linkRemote(obj["remoteAddress"]);
               }
               else {
@@ -1846,7 +1767,7 @@ void Web::begin() {
     if (method == HTTP_PUT || method == HTTP_POST) {
       if (server.hasArg("plain")) {
         Serial.println("Linking a shade to a group");
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1854,8 +1775,8 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          uint8_t shadeId = obj.containsKey("shadeId") ? obj["shadeId"] : 0;
-          uint8_t groupId = obj.containsKey("groupId") ? obj["groupId"] : 0;
+          uint8_t shadeId = !obj["shadeId"].isNull() ? obj["shadeId"] : 0;
+          uint8_t groupId = !obj["groupId"].isNull() ? obj["groupId"] : 0;
           if(groupId == 0) {
             server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"Group id not provided.\"}"));
             return;
@@ -1893,7 +1814,7 @@ void Web::begin() {
     if (method == HTTP_PUT || method == HTTP_POST) {
       if (server.hasArg("plain")) {
         Serial.println("Unlinking a shade from a group");
-        DynamicJsonDocument doc(512);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           switch (err.code()) {
@@ -1910,8 +1831,8 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          uint8_t shadeId = obj.containsKey("shadeId") ? obj["shadeId"] : 0;
-          uint8_t groupId = obj.containsKey("groupId") ? obj["groupId"] : 0;
+          uint8_t shadeId = !obj["shadeId"].isNull() ? obj["shadeId"] : 0;
+          uint8_t groupId = !obj["groupId"].isNull() ? obj["groupId"] : 0;
           if(groupId == 0) {
             server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"Group id not provided.\"}"));
             return;
@@ -1953,7 +1874,7 @@ void Web::begin() {
       }
       else if (server.hasArg("plain")) {
         Serial.println("Deleting a Room");
-        DynamicJsonDocument doc(256);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1961,7 +1882,7 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("roomId")) roomId = obj["roomId"];
+          if (!obj["roomId"].isNull()) roomId = obj["roomId"];
           else server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"No room id was supplied.\"}"));
         }
       }
@@ -1985,7 +1906,7 @@ void Web::begin() {
       }
       else if (server.hasArg("plain")) {
         Serial.println("Deleting a shade");
-        DynamicJsonDocument doc(256);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -1993,7 +1914,7 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("shadeId")) shadeId = obj["shadeId"];
+          if (!obj["shadeId"].isNull()) shadeId = obj["shadeId"];
           else server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"No shade id was supplied.\"}"));
         }
       }
@@ -2020,7 +1941,7 @@ void Web::begin() {
       }
       else if (server.hasArg("plain")) {
         Serial.println("Deleting a group");
-        DynamicJsonDocument doc(256);
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -2028,7 +1949,7 @@ void Web::begin() {
         }
         else {
           JsonObject obj = doc.as<JsonObject>();
-          if (obj.containsKey("groupId")) groupId = obj["groupId"];
+          if (!obj["groupId"].isNull()) groupId = obj["groupId"];
           else server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"No group id was supplied.\"}"));
         }
       }
@@ -2088,10 +2009,6 @@ void Web::begin() {
       esp_task_wdt_reset();
     });
   server.on("/updateShadeConfig", HTTP_POST, []() {
-    if(git.lockFS) {
-      server.send(500, _encoding_json, F("{\"status\":\"ERROR\",\"desc\":\"Filesystem update in progress\"}"));
-      return;
-    }
     webServer.sendCORSHeaders(server);
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
     server.sendHeader("Connection", "close");
@@ -2206,7 +2123,7 @@ void Web::begin() {
   server.on("/saveSecurity", []() {
     webServer.sendCORSHeaders(server);
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
     if (err) {
       Serial.print("Error parsing JSON ");
@@ -2223,7 +2140,7 @@ void Web::begin() {
         char token[65];
         webServer.createAPIToken(server.client().remoteIP(), token);
         obj["apiKey"] = token;
-        DynamicJsonDocument sdoc(1024);
+        JsonDocument sdoc;
         JsonObject sobj = sdoc.to<JsonObject>();
         settings.Security.toJSON(sobj);
         serializeJson(sdoc, g_content);
@@ -2236,7 +2153,7 @@ void Web::begin() {
     });
   server.on("/getSecurity", []() {
     webServer.sendCORSHeaders(server);
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     JsonObject obj = doc.to<JsonObject>();
     settings.Security.toJSON(obj);
     serializeJson(doc, g_content);
@@ -2245,7 +2162,7 @@ void Web::begin() {
   server.on("/saveRadio", []() {
     webServer.sendCORSHeaders(server);
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
     if (err) {
       Serial.print("Error parsing JSON ");
@@ -2295,7 +2212,7 @@ void Web::begin() {
         if (server.hasArg("repeats")) repeats = atoi(server.arg("repeats").c_str());
       }
       else if (server.hasArg("plain")) {
-        StaticJsonDocument<128> doc;
+        JsonDocument doc;
         DeserializationError err = deserializeJson(doc, server.arg("plain"));
         if (err) {
           webServer.handleDeserializationError(server, err);
@@ -2304,11 +2221,11 @@ void Web::begin() {
         else {
           JsonObject obj = doc.as<JsonObject>();
           String scmd;
-          if (obj.containsKey("address")) frame.remoteAddress = obj["address"];
-          if (obj.containsKey("command")) scmd = obj["command"].as<String>();
-          if (obj.containsKey("repeats")) repeats = obj["repeats"];
-          if (obj.containsKey("rcode")) frame.rollingCode = obj["rcode"];
-          if (obj.containsKey("encKey")) frame.encKey = obj["encKey"];
+          if (!obj["address"].isNull()) frame.remoteAddress = obj["address"];
+          if (!obj["command"].isNull()) scmd = obj["command"].as<String>();
+          if (!obj["repeats"].isNull()) repeats = obj["repeats"];
+          if (!obj["rcode"].isNull()) frame.rollingCode = obj["rcode"];
+          if (!obj["encKey"].isNull()) frame.encKey = obj["encKey"];
           frame.cmd = translateSomfyCommand(scmd.c_str());
         }
       }
@@ -2323,7 +2240,7 @@ void Web::begin() {
   server.on("/setgeneral", []() {
     webServer.sendCORSHeaders(server);
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     
     Serial.print("Plain: ");
     Serial.print(server.method());
@@ -2338,14 +2255,12 @@ void Web::begin() {
       HTTPMethod method = server.method();
       if (method == HTTP_POST || method == HTTP_PUT) {
         // Parse out all the inputs.
-        if (obj.containsKey("hostname") || obj.containsKey("ssdpBroadcast") || obj.containsKey("checkForUpdate")) {
-          bool checkForUpdate = settings.checkForUpdate;
+        if (!obj["hostname"].isNull() || !obj["ssdpBroadcast"].isNull()) {
           settings.fromJSON(obj);
           settings.save();
-          if(settings.checkForUpdate != checkForUpdate) git.emitUpdateCheck();
-          if(obj.containsKey("hostname")) net.updateHostname();
+          if(!obj["hostname"].isNull()) net.updateHostname();
         }
-        if (obj.containsKey("ntpServer") || obj.containsKey("ntpServer")) {
+        if (!obj["ntpServer"].isNull() || !obj["ntpServer"].isNull()) {
           settings.NTP.fromJSON(obj);
           settings.NTP.save();
         }
@@ -2359,7 +2274,7 @@ void Web::begin() {
   server.on("/setNetwork", []() {
     webServer.sendCORSHeaders(server);
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    DynamicJsonDocument doc(1024);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
     if (err) {
       Serial.print("Error parsing JSON ");
@@ -2373,32 +2288,23 @@ void Web::begin() {
       if (method == HTTP_POST || method == HTTP_PUT) {
         // Parse out all the inputs.
         bool reboot = false;
-        if(obj.containsKey("connType") && obj["connType"].as<uint8_t>() != static_cast<uint8_t>(settings.connType)) {
+        if(!obj["connType"].isNull() && obj["connType"].as<uint8_t>() != static_cast<uint8_t>(settings.connType)) {
           settings.connType = static_cast<conn_types_t>(obj["connType"].as<uint8_t>());
           settings.save();
           reboot = true;
         }
-        if(obj.containsKey("wifi")) {
+        if(!obj["wifi"].isNull()) {
           JsonObject objWifi = obj["wifi"];
           if(settings.connType == conn_types_t::wifi) {
-            if(objWifi.containsKey("ssid") && objWifi["ssid"].as<String>().compareTo(settings.WIFI.ssid) != 0) {
+            if(!objWifi["ssid"].isNull() && objWifi["ssid"].as<String>().compareTo(settings.WIFI.ssid) != 0) {
               if(WiFi.softAPgetStationNum() == 0) reboot = true;
             }
-            if(objWifi.containsKey("passphrase") && objWifi["passphrase"].as<String>().compareTo(settings.WIFI.passphrase) != 0) {
+            if(!objWifi["passphrase"].isNull() && objWifi["passphrase"].as<String>().compareTo(settings.WIFI.passphrase) != 0) {
               if(WiFi.softAPgetStationNum() == 0) reboot = true;
             }
           }
           settings.WIFI.fromJSON(objWifi);
           settings.WIFI.save();
-        }
-        if(obj.containsKey("ethernet"))
-        {
-          JsonObject objEth = obj["ethernet"];
-          // This is an ethernet connection so if anything changes we need to reboot.
-          if(settings.connType == conn_types_t::ethernet || settings.connType == conn_types_t::ethernetpref)
-            reboot = true;
-          settings.Ethernet.fromJSON(objEth);
-          settings.Ethernet.save();
         }
         if (reboot) {
           Serial.println("Rebooting ESP for new Network settings...");
@@ -2416,7 +2322,7 @@ void Web::begin() {
     webServer.sendCORSHeaders(server);
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
     Serial.println("Setting IP...");
-    DynamicJsonDocument doc(1024);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
     if (err) {
       webServer.handleDeserializationError(server, err);
@@ -2439,7 +2345,7 @@ void Web::begin() {
     webServer.sendCORSHeaders(server);
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
     Serial.println("Settings WIFI connection...");
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
     if (err) {
       webServer.handleDeserializationError(server, err);
@@ -2453,8 +2359,8 @@ void Web::begin() {
       if (method == HTTP_POST || method == HTTP_PUT) {
         String ssid = "";
         String passphrase = "";
-        if (obj.containsKey("ssid")) ssid = obj["ssid"].as<String>();
-        if (obj.containsKey("passphrase")) passphrase = obj["passphrase"].as<String>();
+        if (!obj["ssid"].isNull()) ssid = obj["ssid"].as<String>();
+        if (!obj["passphrase"].isNull()) passphrase = obj["passphrase"].as<String>();
         bool reboot;
         if (ssid.compareTo(settings.WIFI.ssid) != 0) reboot = true;
         if (passphrase.compareTo(settings.WIFI.passphrase) != 0) reboot = true;
@@ -2490,7 +2396,7 @@ void Web::begin() {
     resp.endObject();
     resp.endResponse();
     /*
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     JsonObject obj = doc.to<JsonObject>();
     doc["fwVersion"] = settings.fwVersion.name;
     settings.toJSON(obj);
@@ -2508,9 +2414,6 @@ void Web::begin() {
     resp.beginObject();
     settings.toJSON(resp);
     resp.addElem("fwVersion", settings.fwVersion.name);
-    resp.beginObject("ethernet");
-    settings.Ethernet.toJSON(resp);
-    resp.endObject();
     resp.beginObject("wifi");
     settings.WIFI.toJSON(resp);
     resp.endObject();
@@ -2537,7 +2440,7 @@ void Web::begin() {
     });
   server.on("/connectmqtt", []() {
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    DynamicJsonDocument doc(1024);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
     if (err) {
       webServer.handleDeserializationError(server, err);
@@ -2591,7 +2494,7 @@ void Web::begin() {
     });
   server.on("/roomSortOrder", []() {
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     Serial.print("Plain: ");
     Serial.print(server.method());
     Serial.println(server.arg("plain"));
@@ -2622,7 +2525,7 @@ void Web::begin() {
   });
   server.on("/shadeSortOrder", []() {
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     Serial.print("Plain: ");
     Serial.print(server.method());
     Serial.println(server.arg("plain"));
@@ -2653,7 +2556,7 @@ void Web::begin() {
   });
   server.on("/groupSortOrder", []() {
     if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    DynamicJsonDocument doc(512);
+    JsonDocument doc;
     Serial.print("Plain: ");
     Serial.print(server.method());
     Serial.println(server.arg("plain"));
@@ -2715,18 +2618,6 @@ void Web::begin() {
     serializeJson(doc, g_content);
     server.send(200, _encoding_json, g_content);
     */
-  });
-  server.on("/recoverFilesystem", [] () {
-    if(server.method() == HTTP_OPTIONS) { server.send(200, "OK"); return; }
-    webServer.sendCORSHeaders(server);
-    if(git.status == GIT_UPDATING)
-      server.send(200, "application/json", "{\"status\":\"OK\",\"desc\":\"Filesystem is updating.  Please wait!!!\"}");
-    else if(git.status != GIT_STATUS_READY)
-      server.send(200, "application/json", "{\"status\":\"ERROR\",\"desc\":\"Cannot recover file system at this time.\"}");
-    else {
-      git.recoverFilesystem();
-      server.send(200, "application/json", "{\"status\":\"OK\",\"desc\":\"Recovering filesystem from github please wait!!!\"}");
-    }
   });
   server.begin();
   apiServer.begin();

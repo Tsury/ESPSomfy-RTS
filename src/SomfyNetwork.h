@@ -1,13 +1,12 @@
 #include <Arduino.h>
+#include "ConfigSettings.h"
 
-#ifndef Network_h
-#define Network_h
-
-//enum class conn_types_t : byte;
+#ifndef SomfyNetwork_h
+#define SomfyNetwork_h
 
 #define CONNECT_TIMEOUT 20000
-#define SSID_SCAN_INTERVAL 60000
-class Network {
+#define SSID_SCAN_INTERVAL 600000
+class SomfyNetwork {
   protected:
     unsigned long lastEmit = 0;
     unsigned long lastMDNS = 0;
@@ -40,7 +39,6 @@ class Network {
     bool openSoftAP();
     bool connect(conn_types_t ctype);
     bool connectWiFi(const uint8_t *bssid = nullptr, const int32_t channel = -1);
-    bool connectWired();
     void setConnected(conn_types_t connType);
     bool getStrongestAP(const char *ssid, uint8_t *bssid, int32_t *channel);
     bool changeAP(const uint8_t *bssid, const int32_t channel);

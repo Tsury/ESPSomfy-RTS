@@ -1,3 +1,5 @@
+#ifdef ENABLE_SSDP
+
 #include <functional>
 #include <AsyncUDP.h>
 #include "Utils.h"
@@ -378,21 +380,15 @@ void SSDPClass::_parsePacket(ssdp_packet_t *pkt, AsyncUDPPacket &p) {
     }
   }
 }
-IPAddress SSDPClass::localIP()
-{
-    // Make sure we don't get a null IPAddress.
-    tcpip_adapter_ip_info_t ip;
-    if (WiFi.getMode() == WIFI_STA) {
-        if (tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &ip)) {
-            return IPAddress();
-        }
-    } else if (WiFi.getMode() == WIFI_OFF) {
-        if (tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_ETH, &ip)) {
-            return IPAddress();
-        }
-    }
-    return IPAddress(ip.ip.addr);
-}    
+IPAddress SSDPClass::localIP() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return WiFi.localIP();
+  }
+  if (WiFi.getMode() == WIFI_MODE_AP || WiFi.getMode() == WIFI_MODE_APSTA) {
+    return WiFi.softAPIP();
+  }
+  return WiFi.localIP();
+}
 void SSDPClass::_sendResponse(IPAddress addr, uint16_t port, UPNPDeviceType *d, const char *st, response_types_t responseType) {
   char buffer[1460];
   IPAddress ip = this->localIP();
@@ -833,3 +829,5 @@ void SSDPClass::setChipId(uint8_t ndx, uint32_t chipId) { this->deviceTypes[ndx]
 #if !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_SSDP)
 SSDPClass SSDP;
 #endif
+
+#endif  // ENABLE_SSDP

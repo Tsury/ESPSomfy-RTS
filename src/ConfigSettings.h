@@ -1,16 +1,9 @@
 #include <ArduinoJson.h>
-#include <ETH.h>
 #ifndef configsettings_h
 #define configsettings_h
 #include "WResp.h"
 #define FW_VERSION "v2.4.7"
-enum class conn_types_t : byte {
-    unset = 0x00,
-    wifi = 0x01,
-    ethernet = 0x02,
-    ethernetpref = 0x03,
-    ap = 0x04
-};
+enum class conn_types_t : byte { unset = 0x00, wifi = 0x01, ap = 0x04 };
 
 enum DeviceStatus {
   DS_OK = 0,
@@ -88,26 +81,6 @@ class WifiSettings: BaseSettings {
     void print();
     
 };
-class EthernetSettings: BaseSettings {
-  public:
-    EthernetSettings();
-    uint8_t boardType = 0; // These board types are enumerated in the ui and used to set the chip settings.
-    eth_phy_type_t phyType = ETH_PHY_LAN8720;
-    eth_clock_mode_t CLKMode = ETH_CLOCK_GPIO0_IN;
-    int8_t phyAddress = ETH_PHY_ADDR;
-    int8_t PWRPin = ETH_PHY_POWER;
-    int8_t MDCPin = ETH_PHY_MDC;
-    int8_t MDIOPin = ETH_PHY_MDIO;
-    
-    bool begin();
-    bool fromJSON(JsonObject &obj);
-    bool toJSON(JsonObject &obj);
-    void toJSON(JsonResponse &json);
-    bool load();
-    bool save();
-    void print();
-    bool usesPin(uint8_t pin);
-};
 class IPSettings: BaseSettings {
   public:
     IPSettings();
@@ -180,7 +153,6 @@ class ConfigSettings: BaseSettings {
     uint8_t status;
     IPSettings IP;
     WifiSettings WIFI;
-    EthernetSettings Ethernet;
     NTPSettings NTP;
     MQTTSettings MQTT;
     SecuritySettings Security;
@@ -194,7 +166,7 @@ class ConfigSettings: BaseSettings {
     void print();
     void emitSockets();
     void emitSockets(uint8_t num);
-    bool toJSON(DynamicJsonDocument &doc);
+    bool toJSON(JsonDocument &doc);
     uint16_t calcSettingsRecSize();
     uint16_t calcNetRecSize();
     bool getAppVersion();

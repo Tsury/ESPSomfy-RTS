@@ -5,14 +5,12 @@
 #include "Sockets.h"
 #include "ConfigSettings.h"
 #include "Somfy.h"
-#include "Network.h"
-#include "GitOTA.h"
+#include "SomfyNetwork.h"
 
 extern ConfigSettings settings;
-extern Network net;
+extern SomfyNetwork net;
 extern SomfyShadeController somfy;
 extern SocketEmitter sockEmit;
-extern GitUpdater git;
 
 
 WebSocketsServer sockServer = WebSocketsServer(8080);
@@ -112,7 +110,6 @@ void SocketEmitter::initClients() {
         esp_task_wdt_reset();
         settings.emitSockets(num);
         somfy.emitState(num);
-        git.emitUpdateCheck(num);
         net.emitSockets(num);
         esp_task_wdt_reset();
       }

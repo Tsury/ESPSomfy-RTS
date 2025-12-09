@@ -604,7 +604,6 @@ bool ShadeConfigFile::restoreFile(SomfyShadeController *s, const char *filename,
   if(opts.network) {
     settings.IP.save();
     settings.WIFI.save();
-    settings.Ethernet.save();
   }
   if(opts.mqtt) settings.MQTT.save();
   return true;
@@ -655,20 +654,6 @@ bool ShadeConfigFile::readNetRecord(restore_options_t &opts) {
         this->skipValue(sizeof(settings.MQTT.discoTopic));
       }
     }
-    // Now lets check to see if we are the same board.  If we are then we will restore
-    // the ethernet phy settings.
-    if(opts.network) {
-      if(strncmp(settings.serverId, this->header.serverId, sizeof(settings.serverId)) == 0) {
-        Serial.println("Restoring Ethernet adapter settings");
-        settings.Ethernet.boardType = this->readUInt8(1);
-        settings.Ethernet.phyType = static_cast<eth_phy_type_t>(this->readUInt8(0));
-        settings.Ethernet.CLKMode = static_cast<eth_clock_mode_t>(this->readUInt8(0));
-        settings.Ethernet.phyAddress = this->readInt8(1);
-        settings.Ethernet.PWRPin = this->readInt8(1);
-        settings.Ethernet.MDCPin = this->readInt8(16);
-        settings.Ethernet.MDIOPin = this->readInt8(23);
-      }
-    }
     if(this->file.position() != startPos + this->header.netRecordSize) {
       Serial.println("Reading to end of network record");
       this->seekChar(CFG_REC_END);
@@ -711,7 +696,6 @@ bool ShadeConfigFile::readSettingsRecord() {
     this->readVarString(settings.NTP.ntpServer, sizeof(settings.NTP.ntpServer));
     this->readVarString(settings.NTP.posixZone, sizeof(settings.NTP.posixZone));
     settings.ssdpBroadcast = this->readBool(false);
-    if(this->header.version >= 20) settings.checkForUpdate = this->readBool(true);
     if(this->file.position() != startPos + this->header.settingsRecordSize) {
       Serial.println("Reading to end of settings record");
       this->seekChar(CFG_REC_END);
@@ -1005,8 +989,7 @@ bool ShadeConfigFile::writeSettingsRecord() {
   this->writeVarString(settings.hostname);
   this->writeVarString(settings.NTP.ntpServer);
   this->writeVarString(settings.NTP.posixZone);
-  this->writeBool(settings.ssdpBroadcast);
-  this->writeBool(settings.checkForUpdate, CFG_REC_END);
+  this->writeBool(settings.ssdpBroadcast, CFG_REC_END);
   return true;
 }
 bool ShadeConfigFile::writeNetRecord() {
@@ -1022,14 +1005,7 @@ bool ShadeConfigFile::writeNetRecord() {
   this->writeUInt16(settings.MQTT.port);
   this->writeBool(settings.MQTT.pubDisco);
   this->writeVarString(settings.MQTT.rootTopic);
-  this->writeVarString(settings.MQTT.discoTopic);
-  this->writeUInt8(settings.Ethernet.boardType);
-  this->writeUInt8(static_cast<uint8_t>(settings.Ethernet.phyType));
-  this->writeUInt8(static_cast<uint8_t>(settings.Ethernet.CLKMode));
-  this->writeInt8(settings.Ethernet.phyAddress);
-  this->writeInt8(settings.Ethernet.PWRPin);
-  this->writeInt8(settings.Ethernet.MDCPin);
-  this->writeInt8(settings.Ethernet.MDIOPin, CFG_REC_END);
+  this->writeVarString(settings.MQTT.discoTopic, CFG_REC_END);
   return true;
 }
 bool ShadeConfigFile::writeTransRecord(transceiver_config_t &cfg) {
